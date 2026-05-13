@@ -3,9 +3,10 @@
 > **Beta.** APIs, storage shapes, and config keys may change between minor versions until 1.0 — pin to a tagged  
 > GitHub release if stability matters.
 
-A Kibana-style web UI for AWS S3 Tables, backed by Athena and the Glue Data
-Catalog. Forked from [HyperDX](https://hyperdx.io) / ClickStack and repurposed
-for analytical query workflows on Iceberg-managed S3 Tables.
+A fork of [HyperDX](https://hyperdx.io) / ClickStack, repurposed as a web UI
+for AWS S3 Tables backed by Athena and the Glue Data Catalog. It keeps
+HyperDX's log/discover UX but targets analytical query workflows on
+Iceberg-managed S3 Tables instead of telemetry on ClickHouse.
 
 **Core value:** familiar log/discover UX (search, time histograms, row inspect,
 saved searches, dashboards) on top of Athena-managed S3 Tables instead of

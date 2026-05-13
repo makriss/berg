@@ -2,151 +2,172 @@
 
 ## Architecture Overview
 
-![architecture](./.github/images/architecture.png)
+Berg is a fork of [HyperDX](https://hyperdx.io) / ClickStack, repurposed as a
+web UI for AWS S3 Tables. It keeps HyperDX's log/discover UX but targets
+analytical query workflows on S3 Tables instead of telemetry on ClickHouse.
+It runs as three packages in a single monorepo:
 
-Service Descriptions:
+| Package                 | Stack                                      | Role                                                                                             |
+| ----------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `packages/api`          | Express, Node 22+, Mongoose                | Auth, sessions, source / dashboard / saved-search CRUD, Athena query executor, Glue passthrough. |
+| `packages/app`          | Next.js 16, Mantine, TanStack Query, Jotai | Search / Discover, dashboards, SQL editor, catalog browser.                                      |
+| `packages/common-utils` | TypeScript                                 | Chart-config types, Lucene → Trino SQL emission, Athena type mapping, Zod schemas.               |
 
-- OpenTelemetry Collector (otel-collector): Receives OpenTelemetry data from
-  instrumented applications and forwards it to ClickHouse for storage. Includes
-  OpAMP supervisor that dynamically pulls configuration from HyperDX API.
-- ClickHouse (ch-server): ClickHouse database, stores all telemetry.
-- MongoDB (db): Stores user/saved search/alert/dashboard data.
-- HyperDX API (api): Node.js API, executes ClickHouse queries on behalf of the
-  frontend and serves the frontend. serves the frontend. Can also run alert
-  checker.
-- HyperDX UI (app): Next.js frontend, serves the UI.
+**Data flow at runtime:** browser → Next.js app → Express api → Athena (Trino)
+reading S3 Tables via the Glue Data Catalog. MongoDB stores app metadata only
+(users, teams, sources, dashboards, saved searches) — never your log data.
 
 ## Development
 
 Pre-requisites:
 
-- Docker
-- Node.js (`>=22`)
+- Docker (for MongoDB)
+- Node.js (`>= 22`)
 - Yarn (v4)
+- AWS credentials with Athena + Glue read access (the api executes real
+  queries against your account; see "AWS configuration" below)
 
-You can get started by deploying a complete development stack in dev mode.
+Start a complete development stack:
 
 ```bash
 yarn dev
 ```
 
-This will start the Node.js API, Next.js frontend locally and the OpenTelemetry
-collector and ClickHouse server in Docker.
+This runs the Express api and the Next.js app locally and starts MongoDB in
+Docker. Each git worktree gets its own slot-based port range so multiple
+developers (or agents) can run `yarn dev` simultaneously without conflicts.
+A dev portal at <http://localhost:9900> auto-starts and lists every active
+stack with its assigned ports — check the portal to find the URL for your
+instance.
 
-Each worktree automatically gets unique ports so multiple developers (or agents)
-can run `yarn dev` simultaneously without conflicts. A dev portal at
-http://localhost:9900 auto-starts and shows all running stacks with their
-assigned ports. Check the portal to find the URL for your instance.
-
-To stop the stack:
+Stop the stack:
 
 ```bash
 yarn dev:down
 ```
 
-To enable self-instrumentation and demo logs, you can set the `HYPERDX_API_KEY`
-to your ingestion key (visit the Team settings page after creating your account).
+The api and app are hot-reloaded — code edits are reflected immediately.
 
-To do this, create a `.env.local` file in the root of the project and add the
-following:
+### AWS configuration
 
-```sh
-HYPERDX_API_KEY=<YOUR_INGESTION_API_KEY_HERE>
+On first clone, copy the env templates and fill them in (the live filenames
+are git-ignored to prevent accidentally committing real credentials):
+
+```bash
+cp packages/api/.env.development.example packages/api/.env.development
+cp packages/app/.env.development.example packages/app/.env.development
+cp packages/api/.env.test.example        packages/api/.env.test
+cp packages/api/.env.e2e.example         packages/api/.env.e2e
+cp packages/common-utils/.env.test.example packages/common-utils/.env.test
 ```
 
-Then restart the stack using `yarn dev`.
+The api needs at least these to talk to AWS:
 
-The core services are all hot-reloaded, so you can make changes to the code and
-see them reflected in real-time.
+| Variable                  | Meaning                                                                              |
+| ------------------------- | ------------------------------------------------------------------------------------ |
+| `ATHENA_REGION`           | e.g. `us-east-1`.                                                                    |
+| `ATHENA_WORKGROUP`        | Athena workgroup that issues the queries (default: `primary`).                       |
+| `ATHENA_OUTPUT_LOCATION`  | `s3://<bucket>/` for Athena query results.                                           |
+| `GLUE_CATALOG_ID`         | `<aws-account-id>:s3tablescatalog/<catalog-name>` for S3 Tables; unset for default.  |
+| `GLUE_DATABASES`          | Comma-separated databases the UI should expose (`db1,db2`).                          |
+
+Standard AWS credential resolution applies (`AWS_PROFILE`, IAM role, env vars).
+The api fails fast at startup if Athena access is missing outside CI.
 
 ### Volumes
 
-The development stack mounts volumes locally for persisting storage under
-`.volumes`. Each worktree gets its own volume directory (e.g.
-`.volumes/ch_data_dev_89`). Clear the `.volumes` directory to reset ClickHouse
-and MongoDB storage.
+The dev stack mounts MongoDB data under `.volumes/` (per-worktree directory,
+e.g. `.volumes/mongo_data_dev_42`). Delete the directory to reset app state.
 
-### Windows
+### Windows / WSL 2
 
-If you are running WSL 2, Hot module reload on Nextjs (Frontend) does not work
-out of the box on windows when run natively on docker. The fix here is to open
-project directory in WSL and run the above docker compose commands directly in
-WSL. Note that the project directory should not be under /mnt/c/ directory. You
-can clone the git repo in /home/{username} for example.
-
-To develop from WSL, follow instructions
-[here](https://code.visualstudio.com/docs/remote/wsl).
+Hot module reload doesn't work out-of-the-box when the project lives on the
+Windows side. Clone into a WSL home directory (`/home/<user>/...`, **not**
+`/mnt/c/`) and run the dev commands from inside WSL. See
+[the official WSL guide](https://code.visualstudio.com/docs/remote/wsl).
 
 ## Testing
 
-All test environments use slot-based port isolation, so they can run
-simultaneously with the dev stack and across multiple worktrees.
-
-### E2E Tests
-
-E2E tests run against a full local stack (MongoDB + ClickHouse + API). Docker
-must be running.
-
-```bash
-# Run all E2E tests
-make e2e
-
-# Run a specific spec file (dev mode: hot reload, containers kept running)
-make dev-e2e FILE=search
-
-# Run with grep pattern
-make dev-e2e FILE=search GREP="filter"
-
-# Run via script directly for more control
-./scripts/test-e2e.sh --ui --last-failed
-```
-
-Tests live in `packages/app/tests/e2e/`. Page objects are in `page-objects/`,
-shared components in `components/`.
-
-### Integration Tests
-
-```bash
-# Build dependencies (run once before first test run)
-make dev-int-build
-
-# Run a specific test file
-make dev-int FILE=checkAlerts
-```
+All test environments use slot-based port isolation, so they can run in
+parallel with the dev stack and across multiple worktrees.
 
 ### Unit Tests
 
-To run unit tests or update snapshots, you can go to the package you want (ex.
-common-utils) to test and run:
+Per-package — fastest feedback loop:
 
 ```bash
-yarn dev:unit
+# from the package directory you want to test
+yarn dev:unit          # watch mode
+yarn ci:unit           # one-shot
 ```
+
+Or across the whole repo:
+
+```bash
+make ci-unit
+```
+
+### Integration Tests
+
+Spin up the full Docker dependencies and run a specific test file:
+
+```bash
+make dev-int-build                      # one-time build
+make dev-int FILE=<TEST_FILE_NAME>      # Ctrl-C to tear down
+```
+
+### E2E Tests
+
+Playwright against a local stack (api + app + MongoDB; AWS calls go through
+fixture data via `.env.e2e`):
+
+```bash
+# first-time browser install
+cd packages/app && yarn playwright install chromium
+
+# run all
+make e2e
+
+# run a single spec, hot-reloaded
+make dev-e2e FILE=navigation
+make dev-e2e FILE=navigation GREP="help menu"
+make dev-e2e GREP="should navigate"
+make dev-e2e FILE=navigation REPORT=1   # open HTML report after run
+make dev-e2e-clean                      # clear artifacts
+```
+
+E2E specs live in `packages/app/tests/e2e/`. Page objects under `page-objects/`,
+shared components under `components/`.
+
+### Lint + typecheck
+
+```bash
+make ci-lint
+```
+
+After finishing edits without a commit, run `yarn lint:fix` from the repo
+root — pre-commit hooks already do this when you commit.
 
 ## AI-Assisted Development
 
-HyperDX includes an [MCP server](https://modelcontextprotocol.io/) that lets AI assistants query observability data, manage dashboards, and
-explore data sources. See [MCP.md](/MCP.md) for setup instructions.
+The repo ships with `.claude/` agents and skills for test generation,
+healing, and planning. They load automatically when you open the project in
+Claude Code — no extra setup.
 
-The repo also ships with configuration for AI coding assistants that enables interactive browser-based E2E test generation and debugging via
-the [Playwright MCP server](https://github.com/microsoft/playwright-mcp).
+A Playwright MCP server config is included at `.cursor/mcp.json` for Cursor
+users. Open **Cursor Settings → Tools & MCP** and enable the
+`playwright-test` server to give Cursor's AI a live browser for test
+exploration and debugging.
 
-### Claude Code
+## Submitting changes
 
-The project includes agents and skills for test generation, healing, and planning under `.claude/`. These are loaded automatically when you open the project in Claude Code. No additional setup required.
+- Branch off `main`. For agent-generated branches, prefix with `claude/`,
+  `agent/`, or `ai/` so the PR triage classifier can apply the right
+  scrutiny.
+- Keep PRs scoped to a single logical change; explain the **why** in the
+  description, not just the what.
+- Run `make ci-lint` and `make ci-unit` before opening the PR.
+- Use the git author's default profile in commits — no `Co-Authored-By`
+  trailers.
 
-### Cursor
-
-A Playwright MCP server config is included at `.cursor/mcp.json`. To activate it:
-
-1. Open **Cursor Settings → Tools & MCP**
-2. The `playwright-test` server should appear automatically from the project config
-3. Enable it
-
-This gives Cursor's AI access to a live browser for test exploration and debugging.
-
-## Additional support
-
-If you need help getting started,
-[join our Discord](https://discord.gg/FErRRKU78j) and we're more than happy to
-get you set up!
+If you need help, open a GitHub issue with a minimal reproduction.

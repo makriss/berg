@@ -471,7 +471,6 @@ export default function AppNav({ fixed = false }: { fixed?: boolean }) {
               />
             )}
           </div>
-
         </ScrollArea>
 
         <div className={styles.footer} style={{ width: navWidth }}>
